@@ -1,6 +1,6 @@
 # Suppressed SaaS SMS, kept in the send path
 
-Infrai exposes one endpoint for the actual send. This Go service sits in front of it to make the suppression decision explicit: an active tenant passes, a lifecycle stop or admin suppress blocks the request. On the allowed path we call Infrai with one `INFRAI_API_KEY` and a plain HTTP request.
+We run this small Go service in prod to keep the SMS send path auditable. An active tenant can text a recipient; a lifecycle stop or admin suppression drops the request. For the allowed branch we call Infrai with one key `INFRAI_API_KEY` via a plain HTTP request. Make the send idempotent so retries don't double-deliver.
 
 ## Run the decision locally
 
@@ -11,15 +11,15 @@ curl -X POST localhost:8080/send -H 'content-type: application/json' \
   -d '{"tenant_id":"acme","to":"user@example.com","body":"Your workspace is ready"}'
 ```
 
-Treat the test as a runbook check. It asserts three cases: active tenant plus clear recipient returns `allowed`; an address in the tenant suppression map returns `recipient_suppressed`; an inactive tenant returns `tenant_inactive`. `go test ./...` is the exact verification command to run before a deploy.
+Our runbook test asserts three inputs. Active tenant plus clear recipient returns `allowed`. An address in the tenant suppression map returns `recipient_suppressed`. An inactive tenant returns `tenant_inactive`. `go test ./...` is the exact verification command, safe to rerun.
 
 ## Request boundary
 
-`main.go` owns onboarding state (`Tenant.Active`), the admin suppression map, and the decision function. Only an allowed request reaches `POST /v1/sms/send`. We decode Infrai's `{ok,data,error}` envelope before trusting the result, and the bearer key never lives in source. The response exposes `sent`, `reason`, and the provider `message_id` so an operator can see the transition during a postmortem.
+`main.go` owns onboarding state (`Tenant.Active`), the admin suppression map, and the decision function. Only an allowed request reaches `POST /v1/sms/send`. The client decodes Infrai's `{ok,data,error}` envelope before interpreting the result, and the bearer key never lives in source. The response exposes `sent`, `reason`, and the provider `message_id` so an operator can see the transition during a postmortem.
 
 ## Shape to reuse
 
-Replace the in-memory tenant lookup with your account store and feed the same `decide` result into a queue worker. Keep suppression checks immediately before the send call; that keeps retries idempotent and lets lifecycle changes take effect without changing transport code.
+Replace the in-memory tenant lookup with your account store and feed the same `decide` result into a queue worker. Keep suppression checks immediately before the send call; lifecycle changes then take effect without changing the transport code. This avoids duplicate deliveries from queue retries.
 
 ## License
 
@@ -27,7 +27,7 @@ MIT
 
 ## Going to production: Go SaaS SMS Suppression
 
-The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Go SaaS SMS Suppression.
+The snippet above is minimal by design. For real use, wire these up. The details below apply to Go SaaS SMS Suppression.
 
 **Account & key**
 
